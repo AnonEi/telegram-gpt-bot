@@ -1,106 +1,182 @@
-import os
 import random
 import openai
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-import re
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler,
+    MessageHandler,
+    filters
+)
 from datetime import datetime
 
+custom_responses = {
+    "zh": "我擦，我不好説",        
+    "en": "Damn, I can't say that",
+    "fr": "Mince, je ne peux pas le dire",
+    "de": "Verdammt, das kann ich nicht sagen", 
+    "es": "Vaya, no puedo decirlo", 
+    "ja": "ちくしょう、言えないよ", 
+    "ru": "Черт, я не могу этого сказать" 
+}
+async def handle_error_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # get user language
+    user_language = update.message.from_user.language_code
+    # default is english
+    response = custom_responses.get(user_language[:2], custom_responses["en"])  
+    await update.message.reply_text(response)
+
 # Set up your OpenAI API key and Telegram bot token
-OPENAI_API_KEY = 'your_api_key_here'
-TELEGRAM_BOT_TOKEN = 'your_bot_token_here'
+OPENAI_API_KEY = ' '
+TELEGRAM_BOT_TOKEN = ' '
 
-openai.api_key = OPENAI_API_KEY
+# Global dictionaries to store message counts and conversation histories
+message_counts = {}
+thresholds = {}
+conversation_histories = {}
 
-# Log message function, can be deleted
-def log_message(user_id, username, text):
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if not os.path.exists("logs"):
-        os.makedirs("logs")
-    filename = username if username else f"Prof_{user_id}"
-    filepath = f"logs/{filename}.txt"
-    with open(filepath, 'a') as file:
-        file.write(f"{current_time} - {text}\n")
+# Function to check if the bot should reply immediately
+def is_direct_reply_or_mention(update, context):
+    # Check if the message is a direct reply to the bot
+    if update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id:
+        return True
 
+    # Check if the bot's username is mentioned in the message
+    if '@your_bot_username' in update.message.text:  # Replace with your bot's actual username
+        return True
+
+    #if update.message.text.endswith('嗎?') or update.message.text.endswith('？'):
+     #   return True
+
+    return False
 # Function to handle messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
     user_message = update.message.text
     user_id = update.message.from_user.id
     username = update.message.from_user.username
+    chat_type = update.message.chat.type
 
-    # Log the message
-    log_message(user_id, username, user_message)
+    # Decide key based on chat type
+    key = user_id if chat_type == 'private' else chat_id
 
-# Set up your OpenAI API key and Telegram bot token
-OPENAI_API_KEY = 'YPUR_OPENAI_API_KEY_here'
-TELEGRAM_BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN_here'
+    openai.api_key = OPENAI_API_KEY
 
-openai.api_key = OPENAI_API_KEY
+    # Furry character description for the AI model
+    your_character_description = """
+        your character description
+        """
 
-# YOUR character description for the AI model
-YOUR_character_description = """
-eg. A helpful ai chat"""
+    # Initialize or update message count, threshold, and history for the key
+    if key not in message_counts:
+        message_counts[key] = 0
+        thresholds[key] = random.randint(10, 20) #random reply message in a chat, around per 10 to 20 messages 
+        conversation_histories[key] = [{"role": "system", "content": your_character_description}]
 
-# Dictionary to store message counts and thresholds for each chat
-message_counts = {}
-thresholds = {}
-conversation_histories = {}
-
-def is_direct_reply_or_mention(update, context):
-    #this function will autometically reply to user who @ it
-    # Check if the message is a direct reply to the bot
-    if update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id:
-        return True
-
-    # Check if the bot's username is mentioned in the message
-    if '@your_telegram_bot' in update.message.text:  # Replace with your bot's actual username
-        return True
-
-    return False
-
-# Function to handle messages
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
-    user_message = update.message.text
-
-    # Initialize or update message count, threshold, and history for the chat
-    if chat_id not in message_counts:
-        message_counts[chat_id] = 0
-        thresholds[chat_id] = random.randint(100, 120) #eg. will send a response per 100 to 120 messages in a chat group
-        conversation_histories[chat_id] = [{"role": "system", "content": YOUR_character_description}]
-
-    # Increment message count and store the message in history
-    message_counts[chat_id] += 1
-    conversation_histories[chat_id].append({"role": "user", "content": user_message})
+    # Increment message count and store the user's message
+    message_counts[key] += 1
+    conversation_histories[key].append({"role": "user", "content": user_message})
+    #image
+    if await is_image_request(user_message):
+        prompt = user_message.strip()
+        await generate_image_from_prompt(update, context, prompt)
+        return
 
     # Check conditions for responding
-    immediate_response = is_direct_reply_or_mention(update, context) or (message_counts[chat_id] >= thresholds[chat_id]) or update.message.chat.type == 'private'
-
-
+    immediate_response = is_direct_reply_or_mention(update, context) or (
+            message_counts[key] >= thresholds[key]) or chat_type == 'private'
 
     # Respond if conditions are met
     if immediate_response:
-        chat_history = conversation_histories[chat_id][-30:]  # Use the last 30 messages for context, can be changed
+        chat_history = conversation_histories[key][-50:]  # Use the last 50 messages for context
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o",
                 messages=chat_history
             )
             reply = response.choices[0].message['content'].strip()
-            await update.message.reply_text(reply)
-            # Reset message count and update history
-            message_counts[chat_id] = 0
-            conversation_histories[chat_id] = [{"role": "system", "content": YOUR_character_description}]
+
+            # Check if the reply is likely a generic or restricted response
+            # You can set rules to detect vague responses
+            times = 0
+            while times < 3 and (len(reply) < 50 and any(keyword in reply for keyword in ["抱歉", "無權", "無法", "對不起", "error", "sorry"])):
+                response = openai.ChatCompletion.create(
+                    model="gpt-4o",
+                    messages=chat_history
+                )
+                reply = response.choices[0].message['content'].strip()
+                times += 1
+                if times == 3:
+                    await handle_error_response(update, context)
+                    return
+            else:
+                await update.message.reply_text(reply)
+
+            # Append assistant's reply to conversation history
+            conversation_histories[key].append({"role": "assistant", "content": reply})
+
+            # Limit conversation history to last 30 messages
+            conversation_histories[key] = conversation_histories[key][-300:]
+
+            # Reset message count if desired (e.g., for group chats)
+            message_counts[key] = 0
+
+
+        except openai.error.InvalidRequestError as e:
+            # Custom response when OpenAI detects sensitive content
+            custom_reply = "我現在不想説話"
+            await update.message.reply_text(custom_reply)
+
+
         except Exception as e:
             print(f"Failed to process message: {e}")
+            await update.message.reply_text("我現在不想説話")
     else:
-        print(f"Accumulated message count for chat {chat_id}: {message_counts[chat_id]}")
+        print(f"Accumulated message count for key {key}: {message_counts[key]}")
+
+# detect user image generate request 
+async def is_image_request(message):
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4-turbo",
+            messages=[
+                {"role": "system", "content": "Determine if the following message is asking to generate or describe an image."},
+                {"role": "user", "content": message}
+            ]
+        )
+        reply = response.choices[0].message['content'].strip().lower()
+        return "yes" in reply or "true" in reply 
+    except Exception as e:
+        print(f"Failed to detect image request intent: {e}")
+        return False
+
+async def generate_image_from_prompt(update, context, prompt):
+    try:
+        response = openai.Image.create(
+            model="dall-e-3",
+            prompt=prompt,
+            n=1,
+            size="1024x1024"
+        )
+        image_url = response['data'][0]['url']
+        await update.message.reply_photo(image_url)
+    except Exception as e:
+        print(f"Failed to generate image: {e}")
+        await update.message.reply_text("我擦，我不好説")
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    print(f'An error occurred: {context.error}')
+
 
 def main():
+    # Create the application instance
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    # Existing handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    # Add the error handler
+    app.add_error_handler(error_handler)
+    # Run the bot
     app.run_polling()
-
+    
 if __name__ == '__main__':
     main()
